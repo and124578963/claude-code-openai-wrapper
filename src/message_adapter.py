@@ -33,6 +33,8 @@ class MessageAdapter:
 
         return prompt, system_prompt
 
+    INTERRUPTED_SENTINEL = "[Request interrupted by user]"
+
     @staticmethod
     def filter_content(content: str) -> str:
         """
@@ -41,6 +43,14 @@ class MessageAdapter:
         """
         if not content:
             return content
+
+        # Defense in depth: never let the interrupt sentinel reach the client.
+        # The primary fix is permission_mode='bypassPermissions' (avoids the
+        # Claude Code 2.x interactive-tool dispatch that produces this string),
+        # but if it ever leaks through (race, edge case, future SDK change) we
+        # strip it here so the API never returns the literal sentinel as the
+        # assistant's reply.
+        content = content.replace(MessageAdapter.INTERRUPTED_SENTINEL, "")
 
         # Remove thinking blocks (common when tools are disabled but Claude tries to think)
         thinking_pattern = r"<thinking>.*?</thinking>"

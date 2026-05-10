@@ -628,6 +628,19 @@ async def generate_streaming_response(
             ParameterValidator.validate_model(claude_options["model"])
 
         # Handle tools - disabled by default for OpenAI compatibility
+        # permission_mode=bypassPermissions is required in BOTH branches because
+        # Claude Code 2.x auto-loads interactive tools (AskUserQuestion, etc.)
+        # whose dispatch in headless mode otherwise emits "[Request interrupted
+        # by user]" and bubbles up as the assistant content.
+        claude_options["permission_mode"] = "bypassPermissions"
+        # Filesystem-settings isolation: pass empty lists so the SDK does NOT
+        # load ~/.claude/settings.json, plugins, hooks, skills or CLAUDE.md
+        # auto-discovery. This is required for a clean OpenAI-compatible API
+        # surface — otherwise every request inherits the user's local Claude
+        # Code persona ("I'm a coding assistant"), refuses off-topic prompts
+        # (cooking, copywriting, etc.) and reshapes structured-output requests.
+        claude_options["setting_sources"] = []
+        claude_options["skills"] = []
         if not request.enable_tools:
             # Disable all tools by using CLAUDE_TOOLS constant
             claude_options["disallowed_tools"] = CLAUDE_TOOLS
@@ -636,8 +649,6 @@ async def generate_streaming_response(
         else:
             # Enable tools - use default safe subset (Read, Glob, Grep, Bash, Write, Edit)
             claude_options["allowed_tools"] = DEFAULT_ALLOWED_TOOLS
-            # Set permission mode to bypass prompts (required for API/headless usage)
-            claude_options["permission_mode"] = "bypassPermissions"
             logger.info(f"Tools enabled by user request: {DEFAULT_ALLOWED_TOOLS}")
 
         # Run Claude Code
@@ -653,6 +664,8 @@ async def generate_streaming_response(
             allowed_tools=claude_options.get("allowed_tools"),
             disallowed_tools=claude_options.get("disallowed_tools"),
             permission_mode=claude_options.get("permission_mode"),
+            setting_sources=claude_options.get("setting_sources"),
+            skills=claude_options.get("skills"),
             stream=True,
         ):
             chunks_buffer.append(chunk)
@@ -890,6 +903,16 @@ async def chat_completions(
                 ParameterValidator.validate_model(claude_options["model"])
 
             # Handle tools - disabled by default for OpenAI compatibility
+            # permission_mode=bypassPermissions is required in BOTH branches because
+            # Claude Code 2.x auto-loads interactive tools (AskUserQuestion, etc.)
+            # whose dispatch in headless mode otherwise emits "[Request interrupted
+            # by user]" and bubbles up as the assistant content.
+            claude_options["permission_mode"] = "bypassPermissions"
+            # Filesystem-settings isolation — see streaming branch above for the
+            # full rationale. Without this the user's local ~/.claude persona
+            # leaks into every request.
+            claude_options["setting_sources"] = []
+            claude_options["skills"] = []
             if not request_body.enable_tools:
                 # Disable all tools by using CLAUDE_TOOLS constant
                 claude_options["disallowed_tools"] = CLAUDE_TOOLS
@@ -898,8 +921,6 @@ async def chat_completions(
             else:
                 # Enable tools - use default safe subset (Read, Glob, Grep, Bash, Write, Edit)
                 claude_options["allowed_tools"] = DEFAULT_ALLOWED_TOOLS
-                # Set permission mode to bypass prompts (required for API/headless usage)
-                claude_options["permission_mode"] = "bypassPermissions"
                 logger.info(f"Tools enabled by user request: {DEFAULT_ALLOWED_TOOLS}")
 
             # Collect all chunks
@@ -912,6 +933,8 @@ async def chat_completions(
                 allowed_tools=claude_options.get("allowed_tools"),
                 disallowed_tools=claude_options.get("disallowed_tools"),
                 permission_mode=claude_options.get("permission_mode"),
+                setting_sources=claude_options.get("setting_sources"),
+                skills=claude_options.get("skills"),
                 stream=False,
             ):
                 chunks.append(chunk)

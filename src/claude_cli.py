@@ -104,6 +104,8 @@ class ClaudeCodeCLI:
         session_id: Optional[str] = None,
         continue_session: bool = False,
         permission_mode: Optional[str] = None,
+        setting_sources: Optional[List[str]] = None,
+        skills: Optional[List[str]] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Run Claude Agent using the Python SDK and yield response chunks."""
 
@@ -140,6 +142,19 @@ class ClaudeCodeCLI:
                 # Set permission mode (needed for tool execution in API context)
                 if permission_mode:
                     options.permission_mode = permission_mode
+
+                # Filesystem-settings isolation. Pass [] to skip loading the user's
+                # ~/.claude/settings.json, project .claude/settings.json, and
+                # CLAUDE.md auto-discovery — required for an OpenAI-compatible API
+                # surface where the caller's prompt must NOT be polluted by the
+                # local "I'm a coding assistant" persona, custom skills, hooks
+                # or plugins. Without this, every chat completion inherits the
+                # user's ~/.claude context and the model refuses or reshapes
+                # off-topic (e.g. recipe / non-engineering) requests.
+                if setting_sources is not None:
+                    options.setting_sources = setting_sources
+                if skills is not None:
+                    options.skills = skills
 
                 # Handle session continuity
                 if continue_session:
