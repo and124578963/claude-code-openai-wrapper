@@ -1,16 +1,14 @@
-version: '3'
 services:
   claude-wrapper:
+    image: and124578963/claude-wrapper:2026.05.10
     build: .
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     volumes:
-      - ~/.claude:/root/.claude
-      # Optional: Mount a specific workspace directory
-      # Uncomment and modify the line below to use a custom workspace
-      # - ./workspace:/workspace
+      # Bundled Claude CLI's auth lives at $HOME/.claude. The container runs
+      # as user "wrapper" (uid 1000) — see Dockerfile — so the mount target
+      # is /home/wrapper/.claude, not /root/.claude. The host-side ~/.claude
+      # files must be readable by uid 1000.
+      - ~/.claude:/home/wrapper/.claude
     environment:
       - PORT=8000
-      # Optional: Set Claude's working directory (defaults to isolated temp dir)
-      # Uncomment and modify the line below to set a custom working directory
-      # - CLAUDE_CWD=/workspace

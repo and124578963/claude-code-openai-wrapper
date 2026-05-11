@@ -133,10 +133,16 @@ class ClaudeCodeCLI:
                     # Use Claude Code preset to maintain expected behavior
                     options.system_prompt = {"type": "preset", "preset": "claude_code"}
 
-                # Set tool restrictions
-                if allowed_tools:
+                # Set tool restrictions.
+                # IMPORTANT: use `is not None` not truthiness — an empty list
+                # is a meaningful WHITELIST=NONE signal. Without this, passing
+                # allowed_tools=[] silently does nothing and Claude Code 2.x
+                # auto-loads its built-in interactive tools (AskUserQuestion,
+                # EnterPlanMode, ExitPlanMode, TaskOutput) which it then tries
+                # to dispatch in headless mode → "[Request interrupted by user]".
+                if allowed_tools is not None:
                     options.allowed_tools = allowed_tools
-                if disallowed_tools:
+                if disallowed_tools is not None:
                     options.disallowed_tools = disallowed_tools
 
                 # Set permission mode (needed for tool execution in API context)

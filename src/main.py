@@ -616,6 +616,34 @@ async def generate_streaming_response(
         if system_prompt:
             system_prompt = MessageAdapter.filter_content(system_prompt)
 
+        # Hard prompt-injection: Claude Code 2.x ALWAYS loads its built-in
+        # interactive tools (AskUserQuestion, EnterPlanMode, ExitPlanMode,
+        # TaskOutput) — neither allowed_tools=[] nor disallowed_tools removes
+        # them from the SDK init `tools` list. So the model can still decide
+        # to call AskUserQuestion when an input looks ambiguous, and in
+        # headless mode the CLI injects "[Request interrupted by user]" as a
+        # synthetic UserMessage. The reliable fix is to tell the model upfront
+        # that there is nobody to ask and no tools to use.
+        if not request.enable_tools:
+            headless_guard = (
+                "===== HEADLESS API MODE — CRITICAL =====\n"
+                "You are running as a stateless API endpoint. There is NO "
+                "human present, NO tools that work, and NO way to ask "
+                "questions. The Claude Code runtime exposes interactive tools "
+                "(AskUserQuestion, EnterPlanMode, ExitPlanMode, TaskOutput) "
+                "but every call to them returns the synthetic reply "
+                "'[Request interrupted by user]' — they ARE BROKEN in this "
+                "mode. Calling any tool wastes a turn for nothing.\n"
+                "ALWAYS respond with direct text using only the information "
+                "in the user message. If something is genuinely unanswerable, "
+                "give your best-effort answer with explicit assumptions noted. "
+                "If a previous turn returned '[Request interrupted by user]', "
+                "treat it as a signal that you tried a forbidden tool — "
+                "answer the original user question with text NOW.\n"
+                "===== END HEADLESS NOTICE =====\n\n"
+            )
+            system_prompt = (headless_guard + system_prompt) if system_prompt else headless_guard
+
         # Get Claude Agent SDK options from request
         claude_options = request.to_claude_options()
 
@@ -642,9 +670,21 @@ async def generate_streaming_response(
         claude_options["setting_sources"] = []
         claude_options["skills"] = []
         if not request.enable_tools:
-            # Disable all tools by using CLAUDE_TOOLS constant
+            # WHITELIST mode: explicitly allow ZERO tools. disallowed_tools
+            # alone does NOT cover Claude Code 2.x built-in interactive tools
+            # (AskUserQuestion, EnterPlanMode, ExitPlanMode, TaskOutput) that
+            # the CLI auto-loads regardless of the disallow list. With
+            # allowed_tools=[] the model has nothing to call → no chance of
+            # the headless interrupt path firing.
+            claude_options["allowed_tools"] = []
             claude_options["disallowed_tools"] = CLAUDE_TOOLS
-            claude_options["max_turns"] = 1  # Single turn for Q&A
+            # Allow up to 5 turns: model may waste turn 1 trying to call the
+            # built-in AskUserQuestion tool (CLI loads it regardless of any
+            # disallow list). After that returns "[Request interrupted by user]"
+            # as a synthetic user reply, model has another shot at producing
+            # actual text on turn 2+. With max_turns=1 we'd hit error_max_turns
+            # before model can recover.
+            claude_options["max_turns"] = 5
             logger.info("Tools disabled (default behavior for OpenAI compatibility)")
         else:
             # Enable tools - use default safe subset (Read, Glob, Grep, Bash, Write, Edit)
@@ -891,6 +931,21 @@ async def chat_completions(
             if system_prompt:
                 system_prompt = MessageAdapter.filter_content(system_prompt)
 
+            # Hard prompt-injection — see streaming branch above for the full
+            # rationale. Without this, Claude Code's built-in AskUserQuestion
+            # tool fires for any ambiguous-looking prompt and the headless CLI
+            # injects "[Request interrupted by user]".
+            if not request_body.enable_tools:
+                headless_guard = (
+                    "HEADLESS API MODE. There is NO human present and NO tools "
+                    "available. NEVER call AskUserQuestion, EnterPlanMode, "
+                    "ExitPlanMode, TaskOutput, or any other tool/function. Even "
+                    "if the request seems ambiguous, answer directly with text "
+                    "based on the available context. Asking clarifying questions "
+                    "is forbidden."
+                )
+                system_prompt = (headless_guard + "\n\n" + system_prompt) if system_prompt else headless_guard
+
             # Get Claude Agent SDK options from request
             claude_options = request_body.to_claude_options()
 
@@ -914,9 +969,18 @@ async def chat_completions(
             claude_options["setting_sources"] = []
             claude_options["skills"] = []
             if not request_body.enable_tools:
-                # Disable all tools by using CLAUDE_TOOLS constant
+                # WHITELIST mode: explicitly allow ZERO tools. See streaming
+                # branch comment for the full rationale on why disallow alone
+                # is not enough — built-in interactive tools slip through.
+                claude_options["allowed_tools"] = []
                 claude_options["disallowed_tools"] = CLAUDE_TOOLS
-                claude_options["max_turns"] = 1  # Single turn for Q&A
+                # Allow up to 5 turns: model may waste turn 1 trying to call the
+                # built-in AskUserQuestion tool (CLI loads it regardless of any
+                # disallow list). After that returns "[Request interrupted by user]"
+                # as a synthetic user reply, model has another shot at producing
+                # actual text on turn 2+. With max_turns=1 we'd hit error_max_turns
+                # before model can recover.
+                claude_options["max_turns"] = 5
                 logger.info("Tools disabled (default behavior for OpenAI compatibility)")
             else:
                 # Enable tools - use default safe subset (Read, Glob, Grep, Bash, Write, Edit)
