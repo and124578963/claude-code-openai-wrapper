@@ -2,6 +2,9 @@ services:
   claude-wrapper:
     image: and124578963/claude-wrapper:2026.05.10
     build: .
+    # Service name "claude-wrapper" is what other containers on `ai-net`
+    # resolve via Docker DNS, e.g. http://claude-wrapper:8000/v1/...
+    container_name: claude-wrapper
     ports:
       - "127.0.0.1:8000:8000"
     volumes:
@@ -12,3 +15,10 @@ services:
       - ~/.claude:/home/wrapper/.claude
     environment:
       - PORT=8000
+    networks:
+      - ai-net
+
+networks:
+  ai-net:
+    external: true
+    name: ai-net

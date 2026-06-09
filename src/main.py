@@ -624,7 +624,8 @@ async def generate_streaming_response(
         # headless mode the CLI injects "[Request interrupted by user]" as a
         # synthetic UserMessage. The reliable fix is to tell the model upfront
         # that there is nobody to ask and no tools to use.
-        if not request.enable_tools:
+        # Skip the guard when MCP servers are attached — tools DO work then.
+        if not request.enable_tools and not request.mcp_servers:
             headless_guard = (
                 "===== HEADLESS API MODE — CRITICAL =====\n"
                 "You are running as a stateless API endpoint. There is NO "
@@ -669,7 +670,7 @@ async def generate_streaming_response(
         # (cooking, copywriting, etc.) and reshapes structured-output requests.
         claude_options["setting_sources"] = []
         claude_options["skills"] = []
-        if not request.enable_tools:
+        if not request.enable_tools and not request.mcp_servers:
             # WHITELIST mode: explicitly allow ZERO tools. disallowed_tools
             # alone does NOT cover Claude Code 2.x built-in interactive tools
             # (AskUserQuestion, EnterPlanMode, ExitPlanMode, TaskOutput) that
@@ -687,9 +688,19 @@ async def generate_streaming_response(
             claude_options["max_turns"] = 5
             logger.info("Tools disabled (default behavior for OpenAI compatibility)")
         else:
-            # Enable tools - use default safe subset (Read, Glob, Grep, Bash, Write, Edit)
-            claude_options["allowed_tools"] = DEFAULT_ALLOWED_TOOLS
-            logger.info(f"Tools enabled by user request: {DEFAULT_ALLOWED_TOOLS}")
+            # Agentic mode. Built-in tools (Read, Glob, Grep, Bash, Write, Edit)
+            # only when explicitly requested via enable_tools; MCP servers from
+            # the request are attached independently, so mcp_servers alone gives
+            # an agent with ONLY the listed MCP tools.
+            allowed_tools = list(DEFAULT_ALLOWED_TOOLS) if request.enable_tools else []
+            if request.mcp_servers:
+                allowed_tools.extend(request.get_mcp_allowed_tools())
+                claude_options["mcp_servers"] = request.mcp_servers
+                logger.info(
+                    f"MCP servers attached: {list(request.mcp_servers.keys())}"
+                )
+            claude_options["allowed_tools"] = allowed_tools
+            logger.info(f"Tools enabled by user request: {allowed_tools}")
 
         # Run Claude Code
         chunks_buffer = []
@@ -706,6 +717,7 @@ async def generate_streaming_response(
             permission_mode=claude_options.get("permission_mode"),
             setting_sources=claude_options.get("setting_sources"),
             skills=claude_options.get("skills"),
+            mcp_servers=claude_options.get("mcp_servers"),
             stream=True,
         ):
             chunks_buffer.append(chunk)
@@ -935,7 +947,8 @@ async def chat_completions(
             # rationale. Without this, Claude Code's built-in AskUserQuestion
             # tool fires for any ambiguous-looking prompt and the headless CLI
             # injects "[Request interrupted by user]".
-            if not request_body.enable_tools:
+            # Skip the guard when MCP servers are attached — tools DO work then.
+            if not request_body.enable_tools and not request_body.mcp_servers:
                 headless_guard = (
                     "HEADLESS API MODE. There is NO human present and NO tools "
                     "available. NEVER call AskUserQuestion, EnterPlanMode, "
@@ -968,7 +981,7 @@ async def chat_completions(
             # leaks into every request.
             claude_options["setting_sources"] = []
             claude_options["skills"] = []
-            if not request_body.enable_tools:
+            if not request_body.enable_tools and not request_body.mcp_servers:
                 # WHITELIST mode: explicitly allow ZERO tools. See streaming
                 # branch comment for the full rationale on why disallow alone
                 # is not enough — built-in interactive tools slip through.
@@ -983,9 +996,17 @@ async def chat_completions(
                 claude_options["max_turns"] = 5
                 logger.info("Tools disabled (default behavior for OpenAI compatibility)")
             else:
-                # Enable tools - use default safe subset (Read, Glob, Grep, Bash, Write, Edit)
-                claude_options["allowed_tools"] = DEFAULT_ALLOWED_TOOLS
-                logger.info(f"Tools enabled by user request: {DEFAULT_ALLOWED_TOOLS}")
+                # Agentic mode — see streaming branch comment. mcp_servers alone
+                # attaches ONLY the listed MCP tools; built-ins need enable_tools.
+                allowed_tools = list(DEFAULT_ALLOWED_TOOLS) if request_body.enable_tools else []
+                if request_body.mcp_servers:
+                    allowed_tools.extend(request_body.get_mcp_allowed_tools())
+                    claude_options["mcp_servers"] = request_body.mcp_servers
+                    logger.info(
+                        f"MCP servers attached: {list(request_body.mcp_servers.keys())}"
+                    )
+                claude_options["allowed_tools"] = allowed_tools
+                logger.info(f"Tools enabled by user request: {allowed_tools}")
 
             # Collect all chunks
             chunks = []
@@ -999,6 +1020,7 @@ async def chat_completions(
                 permission_mode=claude_options.get("permission_mode"),
                 setting_sources=claude_options.get("setting_sources"),
                 skills=claude_options.get("skills"),
+                mcp_servers=claude_options.get("mcp_servers"),
                 stream=False,
             ):
                 chunks.append(chunk)
@@ -1173,6 +1195,8 @@ async def check_compatibility(request_body: ChatCompletionRequest):
                 "continue_conversation",
                 "resume",
                 "cwd",
+                "mcp_servers",
+                "mcp_tools",
             ],
             "custom_headers": [
                 "X-Claude-Max-Turns",

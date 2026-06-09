@@ -1,6 +1,7 @@
 from typing import List, Optional, Dict, Any, Union, Literal
 from pydantic import BaseModel, Field, field_validator, model_validator
 from datetime import datetime
+import re
 import uuid
 import logging
 
@@ -83,6 +84,76 @@ class ChatCompletionRequest(BaseModel):
     stream_options: Optional[StreamOptions] = Field(
         default=None, description="Options for streaming responses"
     )
+    mcp_servers: Optional[Dict[str, Dict[str, Any]]] = Field(
+        default=None,
+        description=(
+            "Per-request MCP servers in Claude Agent SDK format. "
+            'stdio: {"name": {"command": "...", "args": [...], "env": {...}}}; '
+            'remote: {"name": {"type": "http"|"sse", "url": "...", "headers": {...}}}. '
+            "Their tools become available to the agent as mcp__<server>__<tool>."
+        ),
+    )
+    mcp_tools: Optional[List[str]] = Field(
+        default=None,
+        description=(
+            "Optional whitelist of MCP tools (mcp__<server>__<tool>, or mcp__<server> "
+            "to allow every tool of that server). Defaults to all tools of all "
+            "servers listed in mcp_servers."
+        ),
+    )
+
+    @field_validator("mcp_servers")
+    @classmethod
+    def validate_mcp_servers(cls, v):
+        if v is None:
+            return v
+        for name, config in v.items():
+            if not re.fullmatch(r"[a-zA-Z0-9_-]+", name):
+                raise ValueError(
+                    f"Invalid MCP server name '{name}': only letters, digits, '_' and '-' allowed "
+                    "(it becomes part of tool names like mcp__<server>__<tool>)"
+                )
+            if not isinstance(config, dict):
+                raise ValueError(f"MCP server '{name}' config must be an object")
+            server_type = config.get("type", "stdio")
+            if server_type == "stdio":
+                if not config.get("command"):
+                    raise ValueError(f"MCP server '{name}': stdio config requires 'command'")
+            elif server_type in ("http", "sse"):
+                if not config.get("url"):
+                    raise ValueError(f"MCP server '{name}': {server_type} config requires 'url'")
+            else:
+                raise ValueError(
+                    f"MCP server '{name}': unsupported type '{server_type}' "
+                    "(expected 'stdio', 'http' or 'sse')"
+                )
+        return v
+
+    @field_validator("mcp_tools")
+    @classmethod
+    def validate_mcp_tools(cls, v):
+        if v is None:
+            return v
+        for tool in v:
+            if not tool.startswith("mcp__"):
+                raise ValueError(
+                    f"Invalid MCP tool name '{tool}': must start with 'mcp__' "
+                    "(format: mcp__<server> or mcp__<server>__<tool>)"
+                )
+        return v
+
+    def get_mcp_allowed_tools(self) -> List[str]:
+        """Tool whitelist entries for the configured MCP servers.
+
+        With an explicit mcp_tools list, use it as-is; otherwise allow every
+        tool of every listed server via the mcp__<server> wildcard form the
+        Claude Agent SDK supports in allowed_tools.
+        """
+        if not self.mcp_servers:
+            return []
+        if self.mcp_tools:
+            return list(self.mcp_tools)
+        return [f"mcp__{name}" for name in self.mcp_servers]
 
     @field_validator("n")
     @classmethod

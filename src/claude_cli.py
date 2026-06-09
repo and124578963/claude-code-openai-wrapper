@@ -106,6 +106,7 @@ class ClaudeCodeCLI:
         permission_mode: Optional[str] = None,
         setting_sources: Optional[List[str]] = None,
         skills: Optional[List[str]] = None,
+        mcp_servers: Optional[Dict[str, Any]] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Run Claude Agent using the Python SDK and yield response chunks."""
 
@@ -161,6 +162,20 @@ class ClaudeCodeCLI:
                     options.setting_sources = setting_sources
                 if skills is not None:
                     options.skills = skills
+
+                # Per-request MCP servers, passed programmatically. This is the
+                # ONLY way MCP reaches the agent here: setting_sources=[] (see
+                # above) deliberately skips ~/.claude.json / .mcp.json, so
+                # servers added via `claude mcp add` are never loaded. The
+                # corresponding mcp__<server> entries must be present in
+                # allowed_tools or the SDK will load the server but block its
+                # tools.
+                if mcp_servers:
+                    options.mcp_servers = mcp_servers
+                    # Belt-and-suspenders isolation: --strict-mcp-config makes
+                    # the CLI use ONLY the servers above, ignoring .mcp.json,
+                    # user/global settings and plugin-provided servers.
+                    options.strict_mcp_config = True
 
                 # Handle session continuity
                 if continue_session:

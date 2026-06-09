@@ -473,6 +473,43 @@ for chunk in stream:
         print(chunk.choices[0].delta.content, end="")
 ```
 
+### Per-request MCP servers (agent mode)
+
+Attach MCP servers directly in the request — their tools become available to
+the agent for that chat/session. This is the only supported MCP path: the
+wrapper isolates filesystem settings (`setting_sources=[]`), so servers added
+via `claude mcp add` are intentionally **not** loaded.
+
+```python
+response = client.chat.completions.create(
+    model="claude-sonnet-4-6",
+    messages=[{"role": "user", "content": "What's on my Notion dashboard?"}],
+    extra_body={
+        "mcp_servers": {
+            # Remote server (recommended in Docker — no extra runtime needed)
+            "notion": {"type": "http", "url": "https://mcp.notion.com/mcp",
+                       "headers": {"Authorization": "Bearer ..."}},
+            # stdio server (the command must exist where the wrapper runs!)
+            "files": {"command": "python", "args": ["-m", "mcp_server_fetch"]},
+        },
+        # Optional: restrict to specific tools (default = all tools of all
+        # listed servers). Format: mcp__<server> or mcp__<server>__<tool>.
+        "mcp_tools": ["mcp__notion", "mcp__files__fetch"],
+        # Optionally combine with the built-in tools (Read, Bash, ...):
+        "enable_tools": True,
+    },
+)
+```
+
+Notes:
+- `mcp_servers` alone enables agent mode with **only** the listed MCP tools;
+  add `enable_tools: true` to also get the built-in Read/Glob/Grep/Bash/Write/Edit.
+- In the Docker image there is no Node.js, so `npx`-based stdio servers won't
+  start inside the container — prefer `http`/`sse` servers or bake the runtime
+  into the image.
+- `--strict-mcp-config` is passed automatically: only the servers from the
+  request are used, never `.mcp.json` or user/global CLI config.
+
 ## Supported Models
 
 The wrapper exposes Claude's full model catalog. When `ANTHROPIC_API_KEY` is set, `/v1/models` returns Anthropic's live list (cached for 1 hour) and the wrapper picks the latest Sonnet as `DEFAULT_MODEL` at startup. When the key is absent — for example, when running with Bedrock, Vertex, or Claude CLI subscription auth — the static list below is served and `claude-sonnet-4-6` is used as the fallback default. Operators who want a curated list regardless of auth can set `CLAUDE_MODELS_OVERRIDE`.
