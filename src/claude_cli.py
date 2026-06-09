@@ -126,12 +126,21 @@ class ClaudeCodeCLI:
                 if model:
                     options.model = model
 
-                # Set system prompt - CLAUDE AGENT SDK STRUCTURED FORMAT
-                # Use structured format as per SDK documentation
+                # Set system prompt.
+                # IMPORTANT: pass a PLAIN STRING, not {"type": "text", ...}.
+                # The Claude Agent SDK transport only understands three forms:
+                #   - str                          -> --system-prompt <text>
+                #   - {"type": "file", "path": ..} -> --system-prompt-file
+                #   - {"type": "preset", "preset": "claude_code", "append": ..}
+                #                                  -> --append-system-prompt
+                # Any other dict (e.g. the old {"type": "text", "text": ...})
+                # falls through subprocess_cli.py's branch and adds NOTHING to
+                # the command, so the CLI silently uses its default claude_code
+                # prompt — the caller's system prompt is dropped entirely.
                 if system_prompt:
-                    options.system_prompt = {"type": "text", "text": system_prompt}
+                    options.system_prompt = system_prompt
                 else:
-                    # Use Claude Code preset to maintain expected behavior
+                    # No system message: keep Claude Code's default persona.
                     options.system_prompt = {"type": "preset", "preset": "claude_code"}
 
                 # Set tool restrictions.

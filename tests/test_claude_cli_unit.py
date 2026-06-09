@@ -548,7 +548,10 @@ class TestClaudeCodeCLIRunCompletion:
 
             assert len(captured_options) == 1
             opts = captured_options[0]
-            assert opts.system_prompt == {"type": "text", "text": "You are helpful"}
+            # Must be a plain str: the SDK transport only emits --system-prompt
+            # for a str / file / preset+append. A {"type": "text", ...} dict is
+            # silently dropped and the system prompt never reaches the model.
+            assert opts.system_prompt == "You are helpful"
 
     @pytest.mark.asyncio
     async def test_run_completion_with_model(self, cli_instance):
