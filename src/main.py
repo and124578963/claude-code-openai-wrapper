@@ -668,6 +668,29 @@ class DebugLoggingMiddleware(BaseHTTPMiddleware):
 app.add_middleware(DebugLoggingMiddleware)
 
 
+def _json_safe_error_input(value: Any) -> Any:
+    """Return a JSON-serializable representation of a validation error's 'input'.
+
+    When a request body can't be parsed as JSON (garbage body, wrong/absent
+    content-type), pydantic reports the *raw request bytes* as the error input.
+    Echoing those bytes straight into a JSONResponse made json.dumps raise
+    `TypeError: Object of type bytes is not JSON serializable`, so the handler
+    blew up and the client got a 500 instead of a 422. Normalize bytes (and,
+    defensively, any other non-serializable value) before they reach the
+    response body.
+    """
+    if isinstance(value, (bytes, bytearray)):
+        decoded = bytes(value).decode("utf-8", errors="replace")
+        if len(decoded) > 1000:
+            decoded = decoded[:1000] + "...[truncated]"
+        return decoded
+    try:
+        json.dumps(value)
+    except (TypeError, ValueError):
+        return repr(value)[:1000]
+    return value
+
+
 # Custom exception handler for 422 validation errors
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
@@ -686,7 +709,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
                 "field": location,
                 "message": error.get("msg", "Unknown validation error"),
                 "type": error.get("type", "validation_error"),
-                "input": error.get("input"),
+                "input": _json_safe_error_input(error.get("input")),
             }
         )
 
