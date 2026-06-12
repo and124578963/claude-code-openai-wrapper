@@ -245,23 +245,30 @@ class TestChatCompletionRequest:
         options = request.to_claude_options()
         assert options["model"] == "claude-sonnet-4-5-20250929"
 
-    def test_to_claude_options_with_max_tokens(self):
-        """to_claude_options() maps max_tokens to max_thinking_tokens."""
+    def test_to_claude_options_does_not_map_max_tokens(self):
+        """max_tokens must NOT leak into max_thinking_tokens.
+
+        OpenAI clients send max_tokens as an OUTPUT length cap (recipe chat
+        sends 8192); mapping it to a thinking budget would silently enable
+        an 8k-token thinking burn per request. Thinking is controlled only
+        via the X-Claude-Max-Thinking-Tokens header or the
+        DEFAULT_MAX_THINKING_TOKENS env.
+        """
         request = ChatCompletionRequest(
-            messages=[Message(role="user", content="Hi")], max_tokens=500
+            messages=[Message(role="user", content="Hi")], max_tokens=8192
         )
         options = request.to_claude_options()
-        assert options.get("max_thinking_tokens") == 500
+        assert "max_thinking_tokens" not in options
 
-    def test_to_claude_options_prefers_max_completion_tokens(self):
-        """max_completion_tokens takes precedence over max_tokens."""
+    def test_to_claude_options_ignores_max_completion_tokens_too(self):
+        """max_completion_tokens is not mapped to a thinking budget either."""
         request = ChatCompletionRequest(
             messages=[Message(role="user", content="Hi")],
             max_tokens=500,
             max_completion_tokens=1000,
         )
         options = request.to_claude_options()
-        assert options.get("max_thinking_tokens") == 1000
+        assert "max_thinking_tokens" not in options
 
 
 class TestChatCompletionResponse:

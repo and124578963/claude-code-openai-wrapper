@@ -38,5 +38,7 @@ RUN rm -f poetry.lock && poetry install --no-root
 # Expose the port (default 8000)
 EXPOSE 8000
 
-# Run the app with Uvicorn (development mode with reload; switch to --no-reload for prod)
-CMD ["poetry", "run", "uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+# Run the app with Uvicorn. --no-reload: the watchfiles reloader has no
+# place in prod — it burns CPU watching /app and restarts the server (killing
+# in-flight Claude sessions) on any file change.
+CMD ["poetry", "run", "uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000", "--no-reload"]

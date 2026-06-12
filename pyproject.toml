@@ -16,7 +16,11 @@ python-dotenv = "^1.0.1"
 httpx = "^0.27.2"
 sse-starlette = "^2.1.3"
 python-multipart = "^0.0.18"
-claude-agent-sdk = ">=0.1.80"
+# Exact pin: the Dockerfile drops poetry.lock and resolves from here, so a
+# range would silently pull an untested SDK (and its bundled Claude Code CLI)
+# into every rebuild. 0.2.95 is the prod-proven version; the cancel-on-
+# disconnect path relies on its transport close() semantics. Bump deliberately.
+claude-agent-sdk = "0.2.95"
 slowapi = "^0.1.9"
 
 [tool.poetry.group.dev.dependencies]

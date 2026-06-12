@@ -1,0 +1,18 @@
+# Keep .git IN the image deliberately: /app is a full repo so the exact code
+# state of a running container can always be identified (git log in /app).
+
+# Local virtualenvs and caches — huge and host-specific
+.venv/
+__pycache__/
+**/__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+
+# IDE / editor litter (PyCharm leaves *.tmp.<pid>.<ts> files next to sources)
+.idea/
+*.tmp.*
+**/*.tmp.*
+
+# Local secrets — never bake into the image
+.env

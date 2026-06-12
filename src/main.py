@@ -9,7 +9,7 @@ import uuid
 from typing import Optional, AsyncGenerator, Dict, Any, List
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, Request, Depends
+from fastapi import FastAPI, HTTPException, Request, Response, Depends
 from fastapi.security import HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse, HTMLResponse
@@ -319,6 +319,142 @@ def prompt_for_api_protection() -> Optional[str]:
 claude_cli = ClaudeCodeCLI(
     timeout=int(os.getenv("MAX_TIMEOUT", "600000")), cwd=os.getenv("CLAUDE_CWD")
 )
+
+
+class ClientDisconnected(Exception):
+    """Internal signal: the HTTP client dropped the connection mid-completion."""
+
+
+def _cancel_claude_task(task: "asyncio.Task", request_id: str, reason: str) -> None:
+    """Cancel the completion task and log when its cleanup finishes.
+
+    Cancellation propagates into the Claude Agent SDK at the suspended await
+    point: process_query's finally closes the inner generator, which closes
+    the subprocess transport (stdin EOF → 5s → SIGTERM → 5s → SIGKILL), so
+    the `claude` subprocess dies within ~10s and stops burning tokens. That
+    cleanup runs inside the cancelled task — we don't await it here, so the
+    HTTP response isn't delayed by it.
+    """
+    logger.warning(f"[{request_id}] Cancelling Claude session: {reason}")
+    task.cancel()
+
+    def _reap(t: "asyncio.Task") -> None:
+        # Retrieve the outcome so asyncio never logs "exception was never
+        # retrieved". By the time this runs the SDK transport is closed.
+        if t.cancelled():
+            logger.warning(
+                f"[{request_id}] Claude session cancelled ({reason}); subprocess shut down"
+            )
+        elif t.exception() is not None:
+            logger.error(
+                f"[{request_id}] Claude session cleanup after cancel failed: {t.exception()!r}"
+            )
+
+    task.add_done_callback(_reap)
+
+
+def _swallow_watcher_result(t: "asyncio.Task") -> None:
+    """Retrieve the watcher task outcome so asyncio doesn't warn about it."""
+    if not t.cancelled() and t.exception() is not None:
+        logger.debug(f"Disconnect watcher ended with: {t.exception()!r}")
+
+
+async def collect_completion_guarded(
+    request: Request,
+    completion: AsyncGenerator[Dict[str, Any], None],
+    request_id: str,
+) -> List[Dict[str, Any]]:
+    """Drain run_completion() while watching the client and the deadline.
+
+    Starlette only auto-cancels StreamingResponse bodies. For plain-JSON
+    routes uvicorn just queues http.disconnect and the handler runs to
+    completion — in the 2026-06-11 incident four orphaned sessions kept
+    burning the shared rate-cap for 8–42 minutes after the client timed out.
+
+    So: collect chunks in one task, block on the ASGI receive channel in a
+    second task until http.disconnect arrives, and enforce the server
+    deadline (claude_cli.timeout seconds, from MAX_TIMEOUT ms) via the wait
+    timeout. On disconnect raise ClientDisconnected (route answers 204 to
+    nobody); on deadline raise HTTP 504 so the client gets a clean error
+    before its own read-timeout.
+
+    NOTE: request.is_disconnected() polling does NOT work here. Behind
+    BaseHTTPMiddleware (RequestIDMiddleware) every receive goes through
+    receive_or_disconnect(), whose task-group teardown needs an event-loop
+    iteration — more than is_disconnected()'s 0.1ms window, so the poll is
+    *always* cancelled before the disconnect message comes through and
+    reports False forever (verified live on starlette 1.0.0). A plain
+    blocking receive() is the same pattern starlette's own responses use to
+    listen for disconnects.
+    """
+
+    async def _drain() -> List[Dict[str, Any]]:
+        chunks: List[Dict[str, Any]] = []
+        async for chunk in completion:
+            chunks.append(chunk)
+        return chunks
+
+    async def _watch_disconnect() -> None:
+        while True:
+            message = await request.receive()
+            if message["type"] == "http.disconnect":
+                return
+
+    drain_task = asyncio.create_task(_drain())
+    watch_task: Optional["asyncio.Task"] = asyncio.create_task(_watch_disconnect())
+    loop = asyncio.get_running_loop()
+    timeout_s = claude_cli.timeout
+    deadline = (loop.time() + timeout_s) if timeout_s and timeout_s > 0 else None
+
+    try:
+        pending = {drain_task, watch_task}
+        while True:
+            wait_timeout = None if deadline is None else max(0.0, deadline - loop.time())
+            done, _ = await asyncio.wait(
+                pending, timeout=wait_timeout, return_when=asyncio.FIRST_COMPLETED
+            )
+
+            if drain_task in done:
+                return drain_task.result()
+
+            if watch_task is not None and watch_task in done:
+                if watch_task.exception() is None:
+                    _cancel_claude_task(drain_task, request_id, "client disconnected")
+                    raise ClientDisconnected(request_id)
+                # The receive channel broke instead of yielding a disconnect.
+                # Don't kill a healthy completion over it — keep draining
+                # under the deadline only.
+                logger.error(
+                    f"[{request_id}] Disconnect watcher failed "
+                    f"({watch_task.exception()!r}); continuing without it"
+                )
+                pending = {drain_task}
+                watch_task = None
+                continue
+
+            # asyncio.wait timed out → server deadline exceeded
+            _cancel_claude_task(
+                drain_task, request_id, f"server deadline of {timeout_s:.0f}s exceeded"
+            )
+            # Plain-string detail: the global HTTPException handler wraps it
+            # as {"error": {"message": ..., "code": "504"}} (OpenAI style).
+            raise HTTPException(
+                status_code=504,
+                detail=(
+                    f"Claude completion exceeded the server deadline of "
+                    f"{timeout_s:.0f}s (MAX_TIMEOUT)"
+                ),
+            )
+    except asyncio.CancelledError:
+        # The handler itself got cancelled (e.g. server shutdown) — don't
+        # leave the SDK task running detached.
+        _cancel_claude_task(drain_task, request_id, "request handler cancelled")
+        raise
+    finally:
+        if watch_task is not None and not watch_task.done():
+            watch_task.cancel()
+        if watch_task is not None:
+            watch_task.add_done_callback(_swallow_watcher_result)
 
 
 @asynccontextmanager
@@ -718,6 +854,7 @@ async def generate_streaming_response(
             setting_sources=claude_options.get("setting_sources"),
             skills=claude_options.get("skills"),
             mcp_servers=claude_options.get("mcp_servers"),
+            max_thinking_tokens=claude_options.get("max_thinking_tokens"),
             stream=True,
         ):
             chunks_buffer.append(chunk)
@@ -1008,22 +1145,26 @@ async def chat_completions(
                 claude_options["allowed_tools"] = allowed_tools
                 logger.info(f"Tools enabled by user request: {allowed_tools}")
 
-            # Collect all chunks
-            chunks = []
-            async for chunk in claude_cli.run_completion(
-                prompt=prompt,
-                system_prompt=system_prompt,
-                model=claude_options.get("model"),
-                max_turns=claude_options.get("max_turns", 10),
-                allowed_tools=claude_options.get("allowed_tools"),
-                disallowed_tools=claude_options.get("disallowed_tools"),
-                permission_mode=claude_options.get("permission_mode"),
-                setting_sources=claude_options.get("setting_sources"),
-                skills=claude_options.get("skills"),
-                mcp_servers=claude_options.get("mcp_servers"),
-                stream=False,
-            ):
-                chunks.append(chunk)
+            # Collect all chunks, watching for client disconnect and the
+            # MAX_TIMEOUT deadline (cancels the Claude subprocess on either).
+            chunks = await collect_completion_guarded(
+                request,
+                claude_cli.run_completion(
+                    prompt=prompt,
+                    system_prompt=system_prompt,
+                    model=claude_options.get("model"),
+                    max_turns=claude_options.get("max_turns", 10),
+                    allowed_tools=claude_options.get("allowed_tools"),
+                    disallowed_tools=claude_options.get("disallowed_tools"),
+                    permission_mode=claude_options.get("permission_mode"),
+                    setting_sources=claude_options.get("setting_sources"),
+                    skills=claude_options.get("skills"),
+                    mcp_servers=claude_options.get("mcp_servers"),
+                    max_thinking_tokens=claude_options.get("max_thinking_tokens"),
+                    stream=False,
+                ),
+                request_id,
+            )
 
             # Extract assistant message
             raw_assistant_content = claude_cli.parse_claude_message(chunks)
@@ -1065,6 +1206,10 @@ async def chat_completions(
 
     except HTTPException:
         raise
+    except ClientDisconnected:
+        # Client is gone — nobody reads this; 204 just closes the connection
+        # cleanly and shows up in access logs.
+        return Response(status_code=204)
     except Exception as e:
         logger.error(f"Chat completion error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -1098,7 +1243,10 @@ async def anthropic_messages(
         raise HTTPException(status_code=503, detail=error_detail)
 
     try:
-        logger.info(f"Anthropic Messages API request: model={request_body.model}")
+        request_id = f"msg-{os.urandom(8).hex()}"
+        logger.info(
+            f"Anthropic Messages API request: id={request_id}, model={request_body.model}"
+        )
 
         # Convert Anthropic messages to internal format
         messages = request_body.to_openai_messages()
@@ -1120,18 +1268,21 @@ async def anthropic_messages(
             system_prompt = MessageAdapter.filter_content(system_prompt)
 
         # Run Claude Code - tools enabled by default for Anthropic SDK clients
-        # (they're typically using this for agentic workflows)
-        chunks = []
-        async for chunk in claude_cli.run_completion(
-            prompt=prompt,
-            system_prompt=system_prompt,
-            model=request_body.model,
-            max_turns=10,
-            allowed_tools=DEFAULT_ALLOWED_TOOLS,
-            permission_mode="bypassPermissions",
-            stream=False,
-        ):
-            chunks.append(chunk)
+        # (they're typically using this for agentic workflows). Guarded: the
+        # Claude subprocess is cancelled on client disconnect / MAX_TIMEOUT.
+        chunks = await collect_completion_guarded(
+            request,
+            claude_cli.run_completion(
+                prompt=prompt,
+                system_prompt=system_prompt,
+                model=request_body.model,
+                max_turns=10,
+                allowed_tools=DEFAULT_ALLOWED_TOOLS,
+                permission_mode="bypassPermissions",
+                stream=False,
+            ),
+            request_id,
+        )
 
         # Extract assistant message
         raw_assistant_content = claude_cli.parse_claude_message(chunks)
@@ -1161,6 +1312,8 @@ async def anthropic_messages(
 
     except HTTPException:
         raise
+    except ClientDisconnected:
+        return Response(status_code=204)
     except Exception as e:
         logger.error(f"Anthropic Messages API error: {e}")
         raise HTTPException(status_code=500, detail=str(e))

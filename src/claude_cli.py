@@ -107,6 +107,7 @@ class ClaudeCodeCLI:
         setting_sources: Optional[List[str]] = None,
         skills: Optional[List[str]] = None,
         mcp_servers: Optional[Dict[str, Any]] = None,
+        max_thinking_tokens: Optional[int] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Run Claude Agent using the Python SDK and yield response chunks."""
 
@@ -186,6 +187,25 @@ class ClaudeCodeCLI:
                     # user/global settings and plugin-provided servers.
                     options.strict_mcp_config = True
 
+                # Thinking budget. Per-request value (X-Claude-Max-Thinking-Tokens
+                # header) wins; otherwise the operator-wide DEFAULT_MAX_THINKING_TOKENS
+                # env applies; with neither, the CLI default is left untouched.
+                # Must go through options.thinking, NOT the deprecated
+                # options.max_thinking_tokens: on current models (Sonnet 4.x+)
+                # the latter only toggles thinking on/off instead of capping
+                # the budget (see claude_agent_sdk/types.py).
+                if max_thinking_tokens is None:
+                    max_thinking_tokens = self._default_max_thinking_tokens()
+                if max_thinking_tokens is not None:
+                    if max_thinking_tokens <= 0:
+                        options.thinking = {"type": "disabled"}
+                    else:
+                        options.thinking = {
+                            "type": "enabled",
+                            "budget_tokens": max_thinking_tokens,
+                        }
+                    logger.info(f"Thinking config: {options.thinking}")
+
                 # Handle session continuity
                 if continue_session:
                     options.continue_session = True
@@ -236,6 +256,23 @@ class ClaudeCodeCLI:
                 "is_error": True,
                 "error_message": str(e),
             }
+
+    @staticmethod
+    def _default_max_thinking_tokens() -> Optional[int]:
+        """Operator-wide thinking budget from DEFAULT_MAX_THINKING_TOKENS.
+
+        Read per call (not in __init__) so it can be changed without code
+        edits in tests and via container env. Empty/unset means "no opinion":
+        the CLI keeps its own default thinking behavior.
+        """
+        raw = os.getenv("DEFAULT_MAX_THINKING_TOKENS", "").strip()
+        if not raw:
+            return None
+        try:
+            return int(raw)
+        except ValueError:
+            logger.warning(f"Invalid DEFAULT_MAX_THINKING_TOKENS={raw!r} — ignoring")
+            return None
 
     def parse_claude_message(self, messages: List[Dict[str, Any]]) -> Optional[str]:
         """Extract the assistant message from Claude Agent SDK messages.
