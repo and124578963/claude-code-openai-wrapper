@@ -1,6 +1,6 @@
 services:
   claude-wrapper:
-    image: and124578963/claude-wrapper:2026.05.10
+    image: and124578963/claude-wrapper:2026.08.16
     build: .
     # Service name "claude-wrapper" is what other containers on `ai-net`
     # resolve via Docker DNS, e.g. http://claude-wrapper:8000/v1/...

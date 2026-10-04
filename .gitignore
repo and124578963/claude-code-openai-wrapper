@@ -17,6 +17,12 @@ build/
 .conda/
 .venv/
 
+# Poetry lock: intentionally not committed. The image is built with
+# `poetry add claude-agent-sdk@latest` so every build ships the newest SDK
+# (and the Claude Code CLI bundled in its wheel); a committed lock would pin
+# that back and make `poetry install` fail whenever pyproject.toml moves.
+poetry.lock
+
 # Environment variables
 .env
 .env.local

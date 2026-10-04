@@ -41,7 +41,7 @@ from src.models import (
     AnthropicTextBlock,
     AnthropicUsage,
 )
-from src.claude_cli import ClaudeCodeCLI
+from src.claude_cli import ClaudeCodeCLI, get_versions
 from src.message_adapter import MessageAdapter
 from src.auth import verify_api_key, security, validate_claude_code_auth, get_claude_code_auth_info
 from src.parameter_validator import ParameterValidator, CompatibilityReporter
@@ -460,6 +460,13 @@ async def collect_completion_guarded(
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Verify Claude Code authentication and CLI on startup."""
+    # Log first: images are built with claude-agent-sdk@latest, so the only way
+    # to know which SDK/CLI a container is running is to ask it.
+    versions = get_versions()
+    logger.info(
+        f"claude-agent-sdk {versions['claude_agent_sdk']} "
+        f"(bundled Claude Code CLI: {versions['claude_code_cli']})"
+    )
     logger.info("Verifying Claude Code authentication and CLI...")
 
     # Validate authentication first
@@ -1402,6 +1409,9 @@ async def version_info(request: Request):
         "version": __version__,
         "service": "claude-code-openai-wrapper",
         "api_version": "v1",
+        # Decided at image build time (poetry add claude-agent-sdk@latest),
+        # not by the constraint in pyproject.toml.
+        **get_versions(),
     }
 
 

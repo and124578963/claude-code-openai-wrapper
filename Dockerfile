@@ -25,15 +25,42 @@ COPY --chown=wrapper:wrapper . /app
 WORKDIR /app
 
 # Install Python dependencies with Poetry as the wrapper user.
-# Drop the committed lock file and let poetry resolve fresh from the current
-# pyproject.toml. Avoids "lock file out of sync" errors when pyproject.toml
-# is bumped (e.g. claude-agent-sdk version) without regenerating the lock.
-# Reproducibility is still anchored by the SemVer pins in pyproject.toml.
+# poetry.lock is not committed (see .gitignore), but a developer's local one
+# can still ride in via the build context — drop it and resolve fresh from
+# pyproject.toml, so a stale lock can never pin the build or trip the
+# "lock file out of sync" error. Everything except claude-agent-sdk is held by
+# the SemVer constraints in pyproject.toml; the SDK is handled below.
 USER wrapper
 RUN rm -f poetry.lock && poetry install --no-root
 
-# Note: Claude Code CLI is bundled with claude-agent-sdk >= 0.1.8
-# No separate Node.js/npm installation required
+# --- Claude Agent SDK + bundled Claude Code CLI --------------------------
+# The CLI binary lives inside the SDK wheel (claude_agent_sdk/_bundled/claude)
+# and the SDK's _find_bundled_cli() beats shutil.which("claude"), so this one
+# dependency IS both the SDK and the CLI — no npm install needed, and one
+# would be ignored anyway.
+#
+# Default CLAUDE_SDK_VERSION=latest makes every build pull the newest release.
+# Pass a concrete version to reproduce or roll back an image:
+#   docker build --build-arg CLAUDE_SDK_VERSION=0.2.95 .
+# BUILD_DATE exists only to bust Docker's layer cache: without a changing arg,
+# a rebuild from untouched sources would silently reuse the old SDK layer and
+# "latest" would quietly mean "whatever we resolved last time".
+ARG CLAUDE_SDK_VERSION=latest
+ARG BUILD_DATE=unknown
+RUN echo "SDK layer built ${BUILD_DATE}" \
+    && if [ "${CLAUDE_SDK_VERSION}" = "latest" ]; then \
+           poetry add "claude-agent-sdk@latest"; \
+       else \
+           poetry add "claude-agent-sdk==${CLAUDE_SDK_VERSION}"; \
+       fi
+
+# Record what actually landed and smoke-test it: assert the CLI really is
+# bundled, then run it. A binary that can't print its own version here would
+# otherwise surface as a 500 on the first chat completion in prod.
+RUN poetry run python -c "import importlib.metadata as md, pathlib, claude_agent_sdk as s; p = pathlib.Path(s.__file__).parent / '_bundled' / 'claude'; assert p.is_file(), 'claude-agent-sdk wheel has no bundled CLI'; print(md.version('claude-agent-sdk'))" > /app/.sdk-version \
+    && poetry run python -c "import pathlib, claude_agent_sdk as s; print(pathlib.Path(s.__file__).parent / '_bundled' / 'claude')" > /app/.cli-path \
+    && "$(cat /app/.cli-path)" --version > /app/.cli-version \
+    && echo "claude-agent-sdk $(cat /app/.sdk-version) / CLI $(cat /app/.cli-version)"
 
 # Expose the port (default 8000)
 EXPOSE 8000

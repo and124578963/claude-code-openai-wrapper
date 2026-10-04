@@ -2,13 +2,52 @@ import os
 import tempfile
 import atexit
 import shutil
+import subprocess
+import importlib.metadata
+from functools import lru_cache
 from typing import AsyncGenerator, Dict, Any, Optional, List
 from pathlib import Path
 import logging
 
+import claude_agent_sdk
 from claude_agent_sdk import query, ClaudeAgentOptions
 
 logger = logging.getLogger(__name__)
+
+
+@lru_cache(maxsize=1)
+def get_versions() -> Dict[str, str]:
+    """Report the claude-agent-sdk version and the Claude Code CLI it bundles.
+
+    The CLI binary ships inside the SDK wheel and the SDK prefers it over any
+    `claude` on $PATH, so the two always move together. Surfacing both is how
+    you confirm which build a running container actually got — the image is
+    built with `poetry add claude-agent-sdk@latest`, so the version is decided
+    at build time, not by anything committed here.
+    """
+    try:
+        sdk_version = importlib.metadata.version("claude-agent-sdk")
+    except importlib.metadata.PackageNotFoundError:
+        sdk_version = "unknown"
+
+    cli_name = "claude.exe" if os.name == "nt" else "claude"
+    cli_path = Path(claude_agent_sdk.__file__).parent / "_bundled" / cli_name
+
+    if not cli_path.is_file():
+        return {
+            "claude_agent_sdk": sdk_version,
+            "claude_code_cli": "not bundled (SDK falls back to $PATH)",
+        }
+
+    try:
+        result = subprocess.run(
+            [str(cli_path), "--version"], capture_output=True, text=True, timeout=15
+        )
+        cli_version = result.stdout.strip() or "unknown"
+    except Exception as e:  # binary present but unusable — worth seeing in logs
+        cli_version = f"unknown ({e})"
+
+    return {"claude_agent_sdk": sdk_version, "claude_code_cli": cli_version}
 
 
 class ClaudeCodeCLI:

@@ -310,6 +310,41 @@ Build and run the wrapper in a Docker container.
 docker build -t claude-wrapper:latest .
 ```
 
+On Windows, `scripts/build-image.ps1` wraps this with a date tag, the cache-bust
+arg and an optional `-Push`.
+
+#### Claude Agent SDK / Claude Code CLI updates
+
+The Claude Code CLI binary ships **inside** the `claude-agent-sdk` wheel
+(`claude_agent_sdk/_bundled/claude`), and the SDK picks that binary over any
+`claude` on `$PATH` — so installing the CLI separately via npm has no effect.
+One dependency controls both.
+
+Every image build therefore runs `poetry add claude-agent-sdk@latest`: a rebuild
+ships the newest SDK *and* the newest CLI. `BUILD_DATE` is passed only to bust
+Docker's layer cache, otherwise an unchanged source tree would reuse the old SDK
+layer.
+
+```bash
+# newest SDK + CLI (default)
+docker build --build-arg BUILD_DATE=$(date -u +%FT%TZ) -t claude-wrapper:latest .
+
+# reproduce or roll back to a specific version
+docker build --build-arg CLAUDE_SDK_VERSION=0.2.95 -t claude-wrapper:0.2.95 .
+```
+
+Because the version is decided at build time, `poetry.lock` is not committed and
+the constraint in `pyproject.toml` is only a floor (the newest version the test
+suite has been run against). To see what a given image or running container
+actually got:
+
+```bash
+docker run --rm claude-wrapper:latest cat /app/.sdk-version /app/.cli-version
+curl -s http://localhost:8000/version   # same info from a live server
+```
+
+The versions are also logged on startup, so `docker logs` shows them.
+
 ### Run
 
 **Production:**
