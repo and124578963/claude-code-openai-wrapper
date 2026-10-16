@@ -5,7 +5,7 @@ Parameter validation and mapping utilities for OpenAI to Claude Code SDK convers
 import logging
 from typing import Dict, Any, List, Optional
 from src.models import ChatCompletionRequest
-from src.constants import CLAUDE_MODELS
+from src.constants import CLAUDE_MODELS, EFFORT_LEVELS
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +55,7 @@ class ParameterValidator:
         allowed_tools: Optional[List[str]] = None,
         disallowed_tools: Optional[List[str]] = None,
         permission_mode: Optional[str] = None,
-        max_thinking_tokens: Optional[int] = None,
+        effort: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Create enhanced Claude Code SDK options with additional parameters.
@@ -84,12 +84,11 @@ class ParameterValidator:
             if cls.validate_permission_mode(permission_mode):
                 options["permission_mode"] = permission_mode
 
-        if max_thinking_tokens is not None:
-            if max_thinking_tokens < 0 or max_thinking_tokens > 50000:
-                logger.warning(
-                    f"max_thinking_tokens={max_thinking_tokens} is outside recommended range (0-50000)"
-                )
-            options["max_thinking_tokens"] = max_thinking_tokens
+        if effort is not None:
+            if effort in EFFORT_LEVELS:
+                options["effort"] = effort
+            else:
+                logger.warning(f"effort={effort!r} is not one of {EFFORT_LEVELS} — ignoring")
 
         return options
 
@@ -102,6 +101,7 @@ class ParameterValidator:
         - X-Claude-Max-Turns: 5
         - X-Claude-Allowed-Tools: tool1,tool2,tool3
         - X-Claude-Permission-Mode: acceptEdits
+        - X-Claude-Effort: low|medium|high|xhigh|max
         """
         claude_options = {}
 
@@ -130,13 +130,15 @@ class ParameterValidator:
         if "x-claude-permission-mode" in headers:
             claude_options["permission_mode"] = headers["x-claude-permission-mode"]
 
-        # Extract max thinking tokens
-        if "x-claude-max-thinking-tokens" in headers:
-            try:
-                claude_options["max_thinking_tokens"] = int(headers["x-claude-max-thinking-tokens"])
-            except ValueError:
+        # Extract effort level
+        if "x-claude-effort" in headers:
+            effort = headers["x-claude-effort"].strip().lower()
+            if effort in EFFORT_LEVELS:
+                claude_options["effort"] = effort
+            else:
                 logger.warning(
-                    f"Invalid X-Claude-Max-Thinking-Tokens header: {headers['x-claude-max-thinking-tokens']}"
+                    f"Invalid X-Claude-Effort header: {headers['x-claude-effort']} "
+                    f"(expected one of {', '.join(EFFORT_LEVELS)})"
                 )
 
         return claude_options
@@ -181,7 +183,7 @@ class CompatibilityReporter:
         if request.max_tokens:
             report["unsupported_parameters"].append("max_tokens")
             report["suggestions"].append(
-                "Use max_turns parameter instead to limit conversation length, or use max_thinking_tokens to limit internal reasoning."
+                "Use max_turns parameter instead to limit conversation length, or the X-Claude-Effort header to control reasoning depth."
             )
 
         if request.n > 1:

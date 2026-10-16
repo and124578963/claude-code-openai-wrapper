@@ -145,3 +145,8 @@ RATE_LIMIT_DEFAULT = 60
 RATE_LIMIT_CHAT = 30
 RATE_LIMIT_MODELS = 100
 RATE_LIMIT_HEALTH = 200
+
+
+# Effort levels accepted by the Claude CLI (--effort) / ClaudeAgentOptions.effort.
+# "xhigh" falls back to "high" on models that don't support it.
+EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")

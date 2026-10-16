@@ -183,7 +183,7 @@ class ChatCompletionRequest(BaseModel):
             max_val = self.max_completion_tokens or self.max_tokens
             info_messages.append(
                 f"max_tokens={max_val} is not enforced (Claude Code manages its own output "
-                "length); use the X-Claude-Max-Thinking-Tokens header to cap thinking"
+                "length); use the X-Claude-Effort header to control reasoning depth"
             )
 
         if self.presence_penalty != 0:
@@ -257,13 +257,11 @@ class ChatCompletionRequest(BaseModel):
         if self.model:
             options["model"] = self.model
 
-        # max_tokens / max_completion_tokens are deliberately NOT mapped to a
-        # thinking budget: in the OpenAI API they cap OUTPUT length, while
-        # max_thinking_tokens caps Claude's internal reasoning. Clients send
-        # max_tokens=8192 routinely and would silently get an 8k-token
-        # thinking budget enabled. Thinking is controlled explicitly instead:
-        # the X-Claude-Max-Thinking-Tokens header per request, or the
-        # DEFAULT_MAX_THINKING_TOKENS env server-wide.
+        # max_tokens / max_completion_tokens are deliberately NOT mapped to
+        # reasoning controls: in the OpenAI API they cap OUTPUT length, and
+        # clients send max_tokens=8192 routinely. Reasoning depth is set
+        # explicitly instead: the X-Claude-Effort header per request, or the
+        # DEFAULT_EFFORT env server-wide.
 
         # Use user field for session identification if provided
         if self.user:

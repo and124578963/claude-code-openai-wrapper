@@ -12,6 +12,8 @@ import logging
 import claude_agent_sdk
 from claude_agent_sdk import query, ClaudeAgentOptions
 
+from src.constants import EFFORT_LEVELS
+
 logger = logging.getLogger(__name__)
 
 
@@ -146,7 +148,7 @@ class ClaudeCodeCLI:
         setting_sources: Optional[List[str]] = None,
         skills: Optional[List[str]] = None,
         mcp_servers: Optional[Dict[str, Any]] = None,
-        max_thinking_tokens: Optional[int] = None,
+        effort: Optional[str] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Run Claude Agent using the Python SDK and yield response chunks."""
 
@@ -226,24 +228,16 @@ class ClaudeCodeCLI:
                     # user/global settings and plugin-provided servers.
                     options.strict_mcp_config = True
 
-                # Thinking budget. Per-request value (X-Claude-Max-Thinking-Tokens
-                # header) wins; otherwise the operator-wide DEFAULT_MAX_THINKING_TOKENS
-                # env applies; with neither, the CLI default is left untouched.
-                # Must go through options.thinking, NOT the deprecated
-                # options.max_thinking_tokens: on current models (Sonnet 4.x+)
-                # the latter only toggles thinking on/off instead of capping
-                # the budget (see claude_agent_sdk/types.py).
-                if max_thinking_tokens is None:
-                    max_thinking_tokens = self._default_max_thinking_tokens()
-                if max_thinking_tokens is not None:
-                    if max_thinking_tokens <= 0:
-                        options.thinking = {"type": "disabled"}
-                    else:
-                        options.thinking = {
-                            "type": "enabled",
-                            "budget_tokens": max_thinking_tokens,
-                        }
-                    logger.info(f"Thinking config: {options.thinking}")
+                # Effort level. Per-request value (X-Claude-Effort header) wins;
+                # otherwise the operator-wide DEFAULT_EFFORT env applies; with
+                # neither, the CLI default is left untouched. Effort steers
+                # adaptive thinking depth, so the thinking config itself is
+                # left to the CLI.
+                if effort is None:
+                    effort = self._default_effort()
+                if effort is not None:
+                    options.effort = effort
+                    logger.info(f"Effort: {effort}")
 
                 # Handle session continuity
                 if continue_session:
@@ -297,21 +291,20 @@ class ClaudeCodeCLI:
             }
 
     @staticmethod
-    def _default_max_thinking_tokens() -> Optional[int]:
-        """Operator-wide thinking budget from DEFAULT_MAX_THINKING_TOKENS.
+    def _default_effort() -> Optional[str]:
+        """Operator-wide effort level from DEFAULT_EFFORT.
 
         Read per call (not in __init__) so it can be changed without code
         edits in tests and via container env. Empty/unset means "no opinion":
-        the CLI keeps its own default thinking behavior.
+        the CLI keeps its own default effort.
         """
-        raw = os.getenv("DEFAULT_MAX_THINKING_TOKENS", "").strip()
+        raw = os.getenv("DEFAULT_EFFORT", "").strip().lower()
         if not raw:
             return None
-        try:
-            return int(raw)
-        except ValueError:
-            logger.warning(f"Invalid DEFAULT_MAX_THINKING_TOKENS={raw!r} — ignoring")
+        if raw not in EFFORT_LEVELS:
+            logger.warning(f"Invalid DEFAULT_EFFORT={raw!r} — ignoring")
             return None
+        return raw
 
     def parse_claude_message(self, messages: List[Dict[str, Any]]) -> Optional[str]:
         """Extract the assistant message from Claude Agent SDK messages.

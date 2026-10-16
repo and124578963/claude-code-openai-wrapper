@@ -1,4 +1,4 @@
-"""Cancel-on-disconnect, MAX_TIMEOUT deadline and thinking-budget plumbing.
+"""Cancel-on-disconnect, MAX_TIMEOUT deadline and effort plumbing.
 
 Regression coverage for the 2026-06-11 incident (run 628f6e40): the Java
 client dropped non-streaming requests on its read-timeout, but the wrapper
@@ -12,9 +12,8 @@ pinned here:
 2. The same loop enforces the server deadline (claude_cli.timeout, from
    MAX_TIMEOUT ms) and returns HTTP 504 — the wrapper must give up BEFORE
    the client's read-timeout (prod: 150s server vs 180s client).
-3. max_thinking_tokens flows header → claude_options → run_completion →
-   ClaudeAgentOptions.thinking (the deprecated max_thinking_tokens SDK
-   field only toggles thinking on/off on current models).
+3. effort flows X-Claude-Effort header → claude_options → run_completion →
+   ClaudeAgentOptions.effort, with DEFAULT_EFFORT as the server-wide fallback.
 """
 
 from __future__ import annotations
@@ -262,54 +261,47 @@ class TestRouteDeadline:
         assert resp.json()["content"][0]["text"] == "OK"
 
 
-class TestThinkingPlumbing:
+class TestEffortPlumbing:
     """Header → claude_options → run_completion kwarg."""
 
-    def test_header_budget_reaches_run_completion(self, auth_ok, client):
-        captured: dict[str, Any] = {}
+    def _post(self, client, captured, body=CHAT_BODY, headers=None):
         with patch.object(
             wrapper_main.claude_cli, "run_completion", _capture_run_completion(captured)
         ):
-            resp = client.post(
-                "/v1/chat/completions",
-                json=CHAT_BODY,
-                headers={"X-Claude-Max-Thinking-Tokens": "1024"},
-            )
+            return client.post("/v1/chat/completions", json=body, headers=headers or {})
 
+    def test_header_effort_reaches_run_completion(self, auth_ok, client):
+        captured: dict[str, Any] = {}
+        resp = self._post(client, captured, headers={"X-Claude-Effort": "low"})
         assert resp.status_code == 200
-        assert captured["max_thinking_tokens"] == 1024
+        assert captured["effort"] == "low"
 
     def test_no_header_passes_none(self, auth_ok, client):
         captured: dict[str, Any] = {}
-        with patch.object(
-            wrapper_main.claude_cli, "run_completion", _capture_run_completion(captured)
-        ):
-            resp = client.post("/v1/chat/completions", json=CHAT_BODY)
-
+        resp = self._post(client, captured)
         assert resp.status_code == 200
-        assert captured["max_thinking_tokens"] is None
+        assert captured["effort"] is None
 
-    def test_body_max_tokens_does_not_become_thinking_budget(
-        self, auth_ok, client
-    ):
-        """The old max_tokens→max_thinking_tokens mapping must stay dead."""
+    def test_invalid_header_passes_none(self, auth_ok, client):
         captured: dict[str, Any] = {}
-        body = dict(CHAT_BODY, max_tokens=8192)
-        with patch.object(
-            wrapper_main.claude_cli, "run_completion", _capture_run_completion(captured)
-        ):
-            resp = client.post("/v1/chat/completions", json=body)
-
+        resp = self._post(client, captured, headers={"X-Claude-Effort": "1024"})
         assert resp.status_code == 200
-        assert captured["max_thinking_tokens"] is None
+        assert captured["effort"] is None
+
+    def test_body_max_tokens_does_not_set_reasoning(self, auth_ok, client):
+        """The old max_tokens→thinking mapping must stay dead."""
+        captured: dict[str, Any] = {}
+        resp = self._post(client, captured, body=dict(CHAT_BODY, max_tokens=8192))
+        assert resp.status_code == 200
+        assert captured["effort"] is None
 
 
 # ---------------------------------------------------------------------------
-# ClaudeCodeCLI.run_completion → ClaudeAgentOptions.thinking
+# ClaudeCodeCLI.run_completion → ClaudeAgentOptions.effort
 # ---------------------------------------------------------------------------
 
 
-class TestRunCompletionThinkingConfig:
+class TestRunCompletionEffort:
     @pytest.fixture
     def cli_instance(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -337,45 +329,34 @@ class TestRunCompletionThinkingConfig:
         return captured[0]
 
     @pytest.mark.asyncio
-    async def test_zero_disables_thinking(self, cli_instance, monkeypatch):
-        monkeypatch.delenv("DEFAULT_MAX_THINKING_TOKENS", raising=False)
-        opts = await self._captured_options(cli_instance, max_thinking_tokens=0)
-        assert opts.thinking == {"type": "disabled"}
-
-    @pytest.mark.asyncio
-    async def test_positive_budget_enables_thinking(self, cli_instance, monkeypatch):
-        monkeypatch.delenv("DEFAULT_MAX_THINKING_TOKENS", raising=False)
-        opts = await self._captured_options(cli_instance, max_thinking_tokens=1024)
-        assert opts.thinking == {"type": "enabled", "budget_tokens": 1024}
+    async def test_request_effort_is_applied(self, cli_instance, monkeypatch):
+        monkeypatch.delenv("DEFAULT_EFFORT", raising=False)
+        opts = await self._captured_options(cli_instance, effort="medium")
+        assert opts.effort == "medium"
 
     @pytest.mark.asyncio
     async def test_unset_leaves_cli_default(self, cli_instance, monkeypatch):
-        monkeypatch.delenv("DEFAULT_MAX_THINKING_TOKENS", raising=False)
-        opts = await self._captured_options(cli_instance, max_thinking_tokens=None)
+        monkeypatch.delenv("DEFAULT_EFFORT", raising=False)
+        opts = await self._captured_options(cli_instance, effort=None)
+        assert opts.effort is None
+        # Thinking config is left to the CLI entirely.
         assert opts.thinking is None
-        # The deprecated SDK field must stay untouched too.
         assert opts.max_thinking_tokens is None
 
     @pytest.mark.asyncio
-    async def test_env_default_zero_disables(self, cli_instance, monkeypatch):
-        monkeypatch.setenv("DEFAULT_MAX_THINKING_TOKENS", "0")
-        opts = await self._captured_options(cli_instance, max_thinking_tokens=None)
-        assert opts.thinking == {"type": "disabled"}
-
-    @pytest.mark.asyncio
-    async def test_env_default_budget_enables(self, cli_instance, monkeypatch):
-        monkeypatch.setenv("DEFAULT_MAX_THINKING_TOKENS", "2048")
-        opts = await self._captured_options(cli_instance, max_thinking_tokens=None)
-        assert opts.thinking == {"type": "enabled", "budget_tokens": 2048}
+    async def test_env_default_applies(self, cli_instance, monkeypatch):
+        monkeypatch.setenv("DEFAULT_EFFORT", "Low")
+        opts = await self._captured_options(cli_instance, effort=None)
+        assert opts.effort == "low"
 
     @pytest.mark.asyncio
     async def test_request_value_overrides_env_default(self, cli_instance, monkeypatch):
-        monkeypatch.setenv("DEFAULT_MAX_THINKING_TOKENS", "0")
-        opts = await self._captured_options(cli_instance, max_thinking_tokens=512)
-        assert opts.thinking == {"type": "enabled", "budget_tokens": 512}
+        monkeypatch.setenv("DEFAULT_EFFORT", "low")
+        opts = await self._captured_options(cli_instance, effort="max")
+        assert opts.effort == "max"
 
     @pytest.mark.asyncio
     async def test_invalid_env_default_is_ignored(self, cli_instance, monkeypatch):
-        monkeypatch.setenv("DEFAULT_MAX_THINKING_TOKENS", "lots")
-        opts = await self._captured_options(cli_instance, max_thinking_tokens=None)
-        assert opts.thinking is None
+        monkeypatch.setenv("DEFAULT_EFFORT", "lots")
+        opts = await self._captured_options(cli_instance, effort=None)
+        assert opts.effort is None

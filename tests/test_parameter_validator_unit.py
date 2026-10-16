@@ -154,24 +154,18 @@ class TestParameterValidatorCreateEnhancedOptions:
         )
         assert "permission_mode" not in options
 
-    def test_max_thinking_tokens_added(self, basic_request):
-        """max_thinking_tokens is added when provided."""
-        options = ParameterValidator.create_enhanced_options(
-            basic_request, max_thinking_tokens=5000
-        )
-        assert options.get("max_thinking_tokens") == 5000
+    def test_effort_added(self, basic_request):
+        """effort is added when a valid level is provided."""
+        options = ParameterValidator.create_enhanced_options(basic_request, effort="low")
+        assert options.get("effort") == "low"
 
-    def test_max_thinking_tokens_warning_for_out_of_range(self, basic_request):
-        """Warning logged when max_thinking_tokens is out of range."""
+    def test_invalid_effort_not_added(self, basic_request):
+        """Unknown effort level is dropped with a warning."""
         with patch("src.parameter_validator.logger") as mock_logger:
-            # Test negative value
-            ParameterValidator.create_enhanced_options(basic_request, max_thinking_tokens=-100)
-            mock_logger.warning.assert_called()
-
-            mock_logger.reset_mock()
-
-            # Test value above range
-            ParameterValidator.create_enhanced_options(basic_request, max_thinking_tokens=60000)
+            options = ParameterValidator.create_enhanced_options(
+                basic_request, effort="extreme"
+            )
+            assert "effort" not in options
             mock_logger.warning.assert_called()
 
 
@@ -221,18 +215,18 @@ class TestParameterValidatorExtractClaudeHeaders:
         result = ParameterValidator.extract_claude_headers(headers)
         assert result.get("permission_mode") == "bypassPermissions"
 
-    def test_extracts_max_thinking_tokens(self):
-        """X-Claude-Max-Thinking-Tokens header is extracted correctly."""
-        headers = {"x-claude-max-thinking-tokens": "5000"}
+    def test_extracts_effort(self):
+        """X-Claude-Effort header is extracted and normalized."""
+        headers = {"x-claude-effort": " High "}
         result = ParameterValidator.extract_claude_headers(headers)
-        assert result.get("max_thinking_tokens") == 5000
+        assert result.get("effort") == "high"
 
-    def test_invalid_max_thinking_tokens_logs_warning(self):
-        """Invalid X-Claude-Max-Thinking-Tokens logs warning."""
-        headers = {"x-claude-max-thinking-tokens": "invalid"}
+    def test_invalid_effort_logs_warning(self):
+        """Invalid X-Claude-Effort logs warning."""
+        headers = {"x-claude-effort": "5000"}
         with patch("src.parameter_validator.logger") as mock_logger:
             result = ParameterValidator.extract_claude_headers(headers)
-            assert "max_thinking_tokens" not in result
+            assert "effort" not in result
             mock_logger.warning.assert_called_once()
 
     def test_extracts_multiple_headers(self):
@@ -241,13 +235,13 @@ class TestParameterValidatorExtractClaudeHeaders:
             "x-claude-max-turns": "5",
             "x-claude-allowed-tools": "Read,Write",
             "x-claude-permission-mode": "default",
-            "x-claude-max-thinking-tokens": "3000",
+            "x-claude-effort": "max",
         }
         result = ParameterValidator.extract_claude_headers(headers)
         assert result.get("max_turns") == 5
         assert result.get("allowed_tools") == ["Read", "Write"]
         assert result.get("permission_mode") == "default"
-        assert result.get("max_thinking_tokens") == 3000
+        assert result.get("effort") == "max"
 
 
 class TestCompatibilityReporter:

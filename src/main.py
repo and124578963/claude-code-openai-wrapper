@@ -884,7 +884,7 @@ async def generate_streaming_response(
             setting_sources=claude_options.get("setting_sources"),
             skills=claude_options.get("skills"),
             mcp_servers=claude_options.get("mcp_servers"),
-            max_thinking_tokens=claude_options.get("max_thinking_tokens"),
+            effort=claude_options.get("effort"),
             stream=True,
         ):
             chunks_buffer.append(chunk)
@@ -1190,7 +1190,7 @@ async def chat_completions(
                     setting_sources=claude_options.get("setting_sources"),
                     skills=claude_options.get("skills"),
                     mcp_servers=claude_options.get("mcp_servers"),
-                    max_thinking_tokens=claude_options.get("max_thinking_tokens"),
+                    effort=claude_options.get("effort"),
                     stream=False,
                 ),
                 request_id,
@@ -1374,7 +1374,7 @@ async def check_compatibility(request_body: ChatCompletionRequest):
                 "allowed_tools",
                 "disallowed_tools",
                 "permission_mode",
-                "max_thinking_tokens",
+                "effort",
                 "continue_conversation",
                 "resume",
                 "cwd",
@@ -1386,7 +1386,7 @@ async def check_compatibility(request_body: ChatCompletionRequest):
                 "X-Claude-Allowed-Tools",
                 "X-Claude-Disallowed-Tools",
                 "X-Claude-Permission-Mode",
-                "X-Claude-Max-Thinking-Tokens",
+                "X-Claude-Effort",
             ],
         },
     }
