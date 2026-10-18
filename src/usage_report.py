@@ -28,16 +28,26 @@ def _is_result(message: Dict[str, Any]) -> bool:
     return "total_cost_usd" in message or message.get("type") == "result"
 
 
+def _is_wrapper_error(message: Dict[str, Any]) -> bool:
+    # При исключении SDK claude_cli.run_completion сам отдаёт синтетический итог
+    # {"type": "result", "subtype": "error_during_execution", "error_message": ...}.
+    # У настоящего ResultMessage поля error_message нет, а usage в синтетическом
+    # быть не может — предупреждать о нём нельзя, иначе предупреждение перестанет
+    # быть сигналом дрейфа формата SDK.
+    return "error_message" in message
+
+
 def sdk_usage(messages: List[Any]) -> Optional[Dict[str, int]]:
     """Счётчики последнего ResultMessage с usage; None — SDK их не прислал.
 
-    Если итоговое сообщение есть, а пригодных счётчиков в нём нет, пишем warning:
+    Если итоговое сообщение SDK есть, а пригодных счётчиков в нём нет, пишем warning:
     иначе ответ молча уйдёт на оценку длина/4 — ту самую ошибку, ради которой
-    модуль написан, — и в логах этого не будет видно.
+    модуль написан, — и в логах этого не будет видно. Синтетический итог самого
+    wrapper'а при сбое SDK (_is_wrapper_error) не в счёт: оценка остаётся, шума нет.
     """
     saw_result = False
     for message in reversed(messages):
-        if not isinstance(message, dict) or not _is_result(message):
+        if not isinstance(message, dict) or not _is_result(message) or _is_wrapper_error(message):
             continue
         saw_result = True
         usage = message.get("usage")

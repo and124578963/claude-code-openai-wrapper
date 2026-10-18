@@ -24,7 +24,6 @@ from src.models import (
     ChatCompletionStreamResponse,
     Choice,
     Message,
-    Usage,
     StreamChoice,
     SessionListResponse,
     ToolListResponse,
@@ -39,7 +38,6 @@ from src.models import (
     AnthropicMessagesRequest,
     AnthropicMessagesResponse,
     AnthropicTextBlock,
-    AnthropicUsage,
 )
 from src.claude_cli import ClaudeCodeCLI, get_versions
 from src.message_adapter import MessageAdapter

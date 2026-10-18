@@ -161,3 +161,17 @@ def test_sdk_usage_is_silent_when_usage_is_present(caplog):
     with caplog.at_level(logging.WARNING, logger="src.usage_report"):
         assert sdk_usage([RESULT]) is not None
     assert caplog.records == []
+
+
+def test_sdk_usage_is_silent_for_the_wrappers_own_error_chunk(caplog):
+    # claude_cli.run_completion сам отдаёт такой итог при исключении SDK — SDK его
+    # не присылал, так что это не дрейф формата и предупреждать не о чем.
+    synthetic = {
+        "type": "result",
+        "subtype": "error_during_execution",
+        "is_error": True,
+        "error_message": "boom",
+    }
+    with caplog.at_level(logging.WARNING, logger="src.usage_report"):
+        assert sdk_usage([{"content": []}, synthetic]) is None
+    assert caplog.records == []
