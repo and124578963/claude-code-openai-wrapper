@@ -43,6 +43,7 @@ from src.models import (
 )
 from src.claude_cli import ClaudeCodeCLI, get_versions
 from src.message_adapter import MessageAdapter
+from src.usage_report import anthropic_usage, openai_usage
 from src.auth import verify_api_key, security, validate_claude_code_auth, get_claude_code_auth_info
 from src.parameter_validator import ParameterValidator, CompatibilityReporter
 from src.session_manager import session_manager
@@ -1012,15 +1013,13 @@ async def generate_streaming_response(
         # Prepare usage data if requested
         usage_data = None
         if request.stream_options and request.stream_options.include_usage:
-            # Estimate token usage based on prompt and completion
+            # Настоящий usage SDK; оценка длина/4 — только если SDK его не прислал.
             completion_text = assistant_content or ""
-            token_usage = claude_cli.estimate_token_usage(prompt, completion_text, request.model)
-            usage_data = Usage(
-                prompt_tokens=token_usage["prompt_tokens"],
-                completion_tokens=token_usage["completion_tokens"],
-                total_tokens=token_usage["total_tokens"],
+            estimate = claude_cli.estimate_token_usage(prompt, completion_text, request.model)
+            usage_data = openai_usage(
+                chunks_buffer, estimate["prompt_tokens"], estimate["completion_tokens"]
             )
-            logger.debug(f"Estimated usage: {usage_data}")
+            logger.debug(f"Usage: {usage_data}")
 
         # Send final chunk with finish reason and optionally usage data
         final_chunk = ChatCompletionStreamResponse(
@@ -1210,10 +1209,6 @@ async def chat_completions(
                 assistant_message = Message(role="assistant", content=assistant_content)
                 session_manager.add_assistant_response(actual_session_id, assistant_message)
 
-            # Estimate tokens (rough approximation)
-            prompt_tokens = MessageAdapter.estimate_tokens(prompt)
-            completion_tokens = MessageAdapter.estimate_tokens(assistant_content)
-
             # Create response
             response = ChatCompletionResponse(
                 id=request_id,
@@ -1225,10 +1220,10 @@ async def chat_completions(
                         finish_reason="stop",
                     )
                 ],
-                usage=Usage(
-                    prompt_tokens=prompt_tokens,
-                    completion_tokens=completion_tokens,
-                    total_tokens=prompt_tokens + completion_tokens,
+                usage=openai_usage(
+                    chunks,
+                    MessageAdapter.estimate_tokens(prompt),
+                    MessageAdapter.estimate_tokens(assistant_content),
                 ),
             )
 
@@ -1323,18 +1318,15 @@ async def anthropic_messages(
         # Filter out tool usage and thinking blocks
         assistant_content = MessageAdapter.filter_content(raw_assistant_content)
 
-        # Estimate tokens
-        prompt_tokens = MessageAdapter.estimate_tokens(prompt)
-        completion_tokens = MessageAdapter.estimate_tokens(assistant_content)
-
         # Create Anthropic-format response
         response = AnthropicMessagesResponse(
             model=request_body.model,
             content=[AnthropicTextBlock(text=assistant_content)],
             stop_reason="end_turn",
-            usage=AnthropicUsage(
-                input_tokens=prompt_tokens,
-                output_tokens=completion_tokens,
+            usage=anthropic_usage(
+                chunks,
+                MessageAdapter.estimate_tokens(prompt),
+                MessageAdapter.estimate_tokens(assistant_content),
             ),
         )
 
