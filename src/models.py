@@ -277,10 +277,17 @@ class Choice(BaseModel):
     finish_reason: Optional[Literal["stop", "length", "content_filter", "null"]] = None
 
 
+class PromptTokensDetails(BaseModel):
+    """Разбивка входа в форме OpenAI: сколько токенов прочитано из кэша провайдера."""
+
+    cached_tokens: int = 0
+
+
 class Usage(BaseModel):
     prompt_tokens: int
     completion_tokens: int
     total_tokens: int
+    prompt_tokens_details: Optional[PromptTokensDetails] = None
 
 
 class ChatCompletionResponse(BaseModel):
@@ -536,6 +543,8 @@ class AnthropicUsage(BaseModel):
 
     input_tokens: int
     output_tokens: int
+    cache_creation_input_tokens: Optional[int] = None
+    cache_read_input_tokens: Optional[int] = None
 
 
 class AnthropicMessagesResponse(BaseModel):
