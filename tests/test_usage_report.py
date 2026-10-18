@@ -4,6 +4,10 @@ ResultMessage несёт usage за весь query (все раунды аген
 ни кэша, ни системного промпта Claude Code, ни раундов с инструментами, а кириллицу
 недосчитывает вдвое — учёт расхода в ai-connector по ней ничего не значит.
 """
+import logging
+
+import pytest
+
 from src.usage_report import anthropic_usage, openai_usage, sdk_usage
 
 RESULT = {
@@ -82,3 +86,78 @@ def test_anthropic_usage_falls_back_to_the_estimate():
     usage = anthropic_usage([], 40, 9)
     assert (usage.input_tokens, usage.output_tokens) == (40, 9)
     assert usage.cache_read_input_tokens is None
+
+
+def test_sdk_usage_accepts_the_legacy_result_marker_without_total_cost():
+    # Старый формат CLI помечает итог type == "result" и не присылает total_cost_usd.
+    legacy = {"type": "result", "usage": {"input_tokens": 10, "output_tokens": 5}}
+    assert sdk_usage([legacy]) == {
+        "prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15,
+        "cached_tokens": 0, "cache_creation_tokens": 0, "fresh_input_tokens": 10,
+    }
+
+
+def test_sdk_usage_counts_bool_fields_as_zero():
+    # bool — подкласс int: True без защиты превратился бы в один токен.
+    message = {**RESULT, "usage": {"input_tokens": True, "cache_read_input_tokens": False,
+                                    "output_tokens": 3}}
+    assert sdk_usage([message]) == {
+        "prompt_tokens": 0, "completion_tokens": 3, "total_tokens": 3,
+        "cached_tokens": 0, "cache_creation_tokens": 0, "fresh_input_tokens": 0,
+    }
+
+
+def test_sdk_usage_counts_negative_fields_as_zero():
+    # Отрицательное число не должно уменьшать сумму и уводить кэш в минус.
+    message = {**RESULT, "usage": {"input_tokens": 7, "cache_read_input_tokens": -5,
+                                    "output_tokens": 2}}
+    assert sdk_usage([message]) == {
+        "prompt_tokens": 7, "completion_tokens": 2, "total_tokens": 9,
+        "cached_tokens": 0, "cache_creation_tokens": 0, "fresh_input_tokens": 7,
+    }
+
+
+def test_sdk_usage_skips_non_dict_messages():
+    # В списке бывают объекты SDK, строки и None — их пропускаем, а не падаем.
+    assert sdk_usage(["text", None, 42, RESULT, object()])["prompt_tokens"] == 18120
+
+
+def test_openai_usage_with_null_usage_on_result_falls_back_to_the_estimate():
+    usage = openai_usage([{**RESULT, "usage": None}], 40, 9)
+    assert (usage.prompt_tokens, usage.completion_tokens, usage.total_tokens) == (40, 9, 49)
+    assert usage.prompt_tokens_details is None
+
+
+def test_anthropic_usage_with_null_usage_on_result_falls_back_to_the_estimate():
+    usage = anthropic_usage([{**RESULT, "usage": None}], 40, 9)
+    assert (usage.input_tokens, usage.output_tokens) == (40, 9)
+    assert usage.cache_read_input_tokens is None
+
+
+@pytest.mark.parametrize("usage", [None, "broken", {}, {"input_tokens": 0, "output_tokens": 0}])
+def test_sdk_usage_warns_when_result_message_has_no_usable_counts(usage, caplog):
+    # Результат есть, а счётчиков нет: ответ молча уйдёт на оценку длина/4 —
+    # именно ту ошибку, ради которой модуль написан. Это должно быть видно в логах.
+    with caplog.at_level(logging.WARNING, logger="src.usage_report"):
+        assert sdk_usage([{**RESULT, "usage": usage}]) is None
+    assert [r.levelno for r in caplog.records] == [logging.WARNING]
+
+
+def test_sdk_usage_warns_when_result_message_has_no_usage_key(caplog):
+    result_without_usage = {"type": "result", "subtype": "error_during_execution", "is_error": True}
+    with caplog.at_level(logging.WARNING, logger="src.usage_report"):
+        assert sdk_usage([{"content": []}, result_without_usage]) is None
+    assert [r.levelno for r in caplog.records] == [logging.WARNING]
+
+
+@pytest.mark.parametrize("messages", [[], [{"content": []}, {"subtype": "init", "data": {}}]])
+def test_sdk_usage_is_silent_without_any_result_message(messages, caplog):
+    with caplog.at_level(logging.WARNING, logger="src.usage_report"):
+        assert sdk_usage(messages) is None
+    assert caplog.records == []
+
+
+def test_sdk_usage_is_silent_when_usage_is_present(caplog):
+    with caplog.at_level(logging.WARNING, logger="src.usage_report"):
+        assert sdk_usage([RESULT]) is not None
+    assert caplog.records == []

@@ -7,9 +7,12 @@ len(text) // 4, и учёт расхода в ai-connector не видел ни 
 промпта Claude Code, ни раундов с инструментами. Оценка осталась запасным путём —
 на случай, когда SDK usage не прислал.
 """
+import logging
 from typing import Any, Dict, List, Optional
 
 from src.models import AnthropicUsage, PromptTokensDetails, Usage
+
+logger = logging.getLogger(__name__)
 
 
 def _count(value: Any) -> int:
@@ -26,10 +29,17 @@ def _is_result(message: Dict[str, Any]) -> bool:
 
 
 def sdk_usage(messages: List[Any]) -> Optional[Dict[str, int]]:
-    """Счётчики последнего ResultMessage с usage; None — SDK их не прислал."""
+    """Счётчики последнего ResultMessage с usage; None — SDK их не прислал.
+
+    Если итоговое сообщение есть, а пригодных счётчиков в нём нет, пишем warning:
+    иначе ответ молча уйдёт на оценку длина/4 — ту самую ошибку, ради которой
+    модуль написан, — и в логах этого не будет видно.
+    """
+    saw_result = False
     for message in reversed(messages):
         if not isinstance(message, dict) or not _is_result(message):
             continue
+        saw_result = True
         usage = message.get("usage")
         if not isinstance(usage, dict):
             continue
@@ -39,7 +49,7 @@ def sdk_usage(messages: List[Any]) -> Optional[Dict[str, int]]:
         output = _count(usage.get("output_tokens"))
         prompt = fresh + written + read
         if prompt == 0 and output == 0:
-            return None
+            break
         return {
             "prompt_tokens": prompt,
             "completion_tokens": output,
@@ -48,6 +58,10 @@ def sdk_usage(messages: List[Any]) -> Optional[Dict[str, int]]:
             "cache_creation_tokens": written,
             "fresh_input_tokens": fresh,
         }
+    if saw_result:
+        logger.warning(
+            "ResultMessage без пригодных счётчиков usage — расход оценён по длине текста (len/4)"
+        )
     return None
 
 
